@@ -1,28 +1,3 @@
-#!/usr/bin/env python3
-"""
-╔══════════════════════════════════════════════════════════════════╗
-║                        E D U P Y                                 ║
-║       An Educational Python-like Interpreter                     ║
-║                                                                  ║
-║  Architecture (all in this single file):                         ║
-║    1. Errors      — LexerError, ParseError, RuntimeError         ║
-║    2. Tokens      — TT enum + Token dataclass                    ║
-║    3. Lexer       — source text → token list                     ║
-║    4. AST Nodes   — dataclasses for every grammar construct      ║
-║    5. Parser      — PEG-style recursive descent                  ║
-║    6. Interpreter — tree-walk executor + scoped environments     ║
-║    7. Builtins    — print, len, range, int, float, str, bool     ║
-║    8. REPL        — interactive read-eval-print loop             ║
-║    9. Runner      — run a .ep source file                        ║
-╚══════════════════════════════════════════════════════════════════╝
-
-Usage
------
-  REPL:          python edupy.py
-  Run a file:    python edupy.py myscript.ep
-  Dump AST:      python edupy.py myscript.ep --ast
-"""
-
 from __future__ import annotations
 import sys, os, textwrap
 from enum import Enum
@@ -35,8 +10,8 @@ from typing import Any, List, Optional
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class EduPyError(Exception):
-    """Base class for all EduPy errors."""
+class PyError(Exception):
+    """Base class for all Py errors."""
 
     def __init__(self, message: str, line: int = None):
         self.message = message
@@ -53,15 +28,15 @@ class EduPyError(Exception):
         return f"{type(self).__name__}: {self.message}{loc}"
 
 
-class LexerError(EduPyError):
+class LexerError(PyError):
     """Illegal character or unterminated literal."""
 
 
-class ParseError(EduPyError):
+class ParseError(PyError):
     """Token stream violates the grammar."""
 
 
-class EduPyRuntimeError(EduPyError):
+class PyRuntimeError(PyError):
     """Type error, undefined name, wrong arity, etc."""
 
 
@@ -618,6 +593,13 @@ class Call(ASTNode):  # ast.Call(func, args, keywords)
     args: List[ASTNode] = field(default_factory=list)
 
 
+@dataclass
+class MethodCall(ASTNode):  # ast.Call(func=Attribute(value, attr), args)
+    obj: ASTNode = None
+    method: str = ""
+    args: List[ASTNode] = field(default_factory=list)
+
+
 # ── Statements ────────────────────────────────────────────────────────────────
 @dataclass
 class Assign(ASTNode):  # ast.Assign(targets, value)
@@ -695,7 +677,8 @@ class FuncDef(ASTNode):  # ast.FunctionDef(name, args, body)
 #   term         := factor   (('*'|'/'|'//'|'%') factor)*
 #   factor       := ('+'|'-') factor | power
 #   power        := primary  ['**' factor]
-#   primary      := atom (call_args | subscript)*
+#   primary      := atom (call_args | subscript | method_call)*
+#   method_call  := '.' NAME '(' args? ')'
 #   atom         := INT | FLOAT | STR | True | False | None
 #                 | NAME | '[' args? ']' | '(' expr ')'
 # ══════════════════════════════════════════════════════════════════════════════
@@ -966,6 +949,20 @@ class Parser:
                 idx = self._expr()
                 self._expect(TT.RBRACKET, "expected ']' after index")
                 node = Subscript(value=node, index=idx, line=ln)
+            elif self._check(TT.DOT):
+                self._advance()
+                ln = self._prev().line
+                name_tok = self._expect(
+                    TT.NAME, "expected attribute/method name after '.'"
+                )
+                if not self._check(TT.LPAREN):
+                    self._err(
+                        f"attribute access without a call is not supported: '.{name_tok.value}'"
+                    )
+                self._advance()  # consume '('
+                args = self._call_args()
+                self._expect(TT.RPAREN, "expected ')' after method arguments")
+                node = MethodCall(obj=node, method=name_tok.value, args=args, line=ln)
             else:
                 break
         return node
@@ -1035,7 +1032,7 @@ class Environment:
             return self.vars[name]
         if self.parent:
             return self.parent.get(name, line)
-        raise EduPyRuntimeError(f"NameError: name '{name}' is not defined", line)
+        raise PyRuntimeError(f"NameError: name '{name}' is not defined", line)
 
     def set(self, name: str, value: Any):
         """Always sets in the *current* scope (like Python assignment)."""
@@ -1065,8 +1062,8 @@ class Environment:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class EduPyFunction:
-    """Represents a user-defined EduPy function (closure over its definition env)."""
+class PyFunction:
+    """Represents a user-defined function (closure over its definition env)."""
 
     def __init__(self, node: FuncDef, closure: Environment):
         self.node = node
@@ -1083,27 +1080,27 @@ def _builtin_print(args):
 
 def _builtin_len(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: len() takes exactly 1 argument")
+        raise PyRuntimeError("TypeError: len() takes exactly 1 argument")
     v = args[0]
     if isinstance(v, (str, list)):
         return len(v)
-    raise EduPyRuntimeError(f"TypeError: object of type '{_type_name(v)}' has no len()")
+    raise PyRuntimeError(f"TypeError: object of type '{_type_name(v)}' has no len()")
 
 
 def _builtin_range(args):
     if not (1 <= len(args) <= 3):
-        raise EduPyRuntimeError("TypeError: range() takes 1–3 arguments")
+        raise PyRuntimeError("TypeError: range() takes 1–3 arguments")
     iargs = []
     for a in args:
         if not isinstance(a, (int, float)):
-            raise EduPyRuntimeError("TypeError: range() arguments must be integers")
+            raise PyRuntimeError("TypeError: range() arguments must be integers")
         iargs.append(int(a))
     return list(range(*iargs))
 
 
 def _builtin_int(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: int() takes 1 argument")
+        raise PyRuntimeError("TypeError: int() takes 1 argument")
     v = args[0]
     if isinstance(v, bool):
         return int(v)
@@ -1113,15 +1110,15 @@ def _builtin_int(args):
         s = v.strip()
         if s.lstrip("-+").isdigit():
             return int(s)
-        raise EduPyRuntimeError(f"ValueError: invalid literal for int(): {v!r}")
-    raise EduPyRuntimeError(
+        raise PyRuntimeError(f"ValueError: invalid literal for int(): {v!r}")
+    raise PyRuntimeError(
         f"TypeError: int() argument must be a string or number, not '{_type_name(v)}'"
     )
 
 
 def _builtin_float(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: float() takes 1 argument")
+        raise PyRuntimeError("TypeError: float() takes 1 argument")
     v = args[0]
     if isinstance(v, bool):
         return float(v)
@@ -1131,20 +1128,20 @@ def _builtin_float(args):
         s = v.strip()
         if s:
             return float(s)
-    raise EduPyRuntimeError(
+    raise PyRuntimeError(
         f"TypeError: float() argument must be a string or number, not '{_type_name(v)}'"
     )
 
 
 def _builtin_str(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: str() takes 1 argument")
+        raise PyRuntimeError("TypeError: str() takes 1 argument")
     return _ep_str(args[0])
 
 
 def _builtin_bool(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: bool() takes 1 argument")
+        raise PyRuntimeError("TypeError: bool() takes 1 argument")
     return _ep_bool(args[0])
 
 
@@ -1155,57 +1152,57 @@ def _builtin_input(args):
 
 def _builtin_abs(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: abs() takes 1 argument")
+        raise PyRuntimeError("TypeError: abs() takes 1 argument")
     v = args[0]
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return abs(v)
-    raise EduPyRuntimeError(f"TypeError: bad operand type for abs(): '{_type_name(v)}'")
+    raise PyRuntimeError(f"TypeError: bad operand type for abs(): '{_type_name(v)}'")
 
 
 def _builtin_max(args):
     if not args:
-        raise EduPyRuntimeError("TypeError: max() expected at least 1 argument")
+        raise PyRuntimeError("TypeError: max() expected at least 1 argument")
     items = args[0] if len(args) == 1 and isinstance(args[0], list) else args
     if not items:
-        raise EduPyRuntimeError("ValueError: max() arg is an empty sequence")
+        raise PyRuntimeError("ValueError: max() arg is an empty sequence")
     return max(items)
 
 
 def _builtin_min(args):
     if not args:
-        raise EduPyRuntimeError("TypeError: min() expected at least 1 argument")
+        raise PyRuntimeError("TypeError: min() expected at least 1 argument")
     items = args[0] if len(args) == 1 and isinstance(args[0], list) else args
     if not items:
-        raise EduPyRuntimeError("ValueError: min() arg is an empty sequence")
+        raise PyRuntimeError("ValueError: min() arg is an empty sequence")
     return min(items)
 
 
 def _builtin_type(args):
     if len(args) != 1:
-        raise EduPyRuntimeError("TypeError: type() takes 1 argument")
+        raise PyRuntimeError("TypeError: type() takes 1 argument")
     return f"<class '{_type_name(args[0])}'>"
 
 
 def _builtin_append(args):
     # Called as append(list, value) — not method syntax
     if len(args) != 2:
-        raise EduPyRuntimeError("TypeError: append() takes 2 arguments")
+        raise PyRuntimeError("TypeError: append() takes 2 arguments")
     lst, val = args
     if not isinstance(lst, list):
-        raise EduPyRuntimeError("TypeError: first argument must be a list")
+        raise PyRuntimeError("TypeError: first argument must be a list")
     lst.append(val)
     return None
 
 
 def _builtin_pop(args):
     if len(args) not in (1, 2):
-        raise EduPyRuntimeError("TypeError: pop() takes 1 or 2 arguments")
+        raise PyRuntimeError("TypeError: pop() takes 1 or 2 arguments")
     lst = args[0]
     if not isinstance(lst, list):
-        raise EduPyRuntimeError("TypeError: first argument must be a list")
+        raise PyRuntimeError("TypeError: first argument must be a list")
     idx = int(args[1]) if len(args) == 2 else -1
     if not lst:
-        raise EduPyRuntimeError("IndexError: pop from empty list")
+        raise PyRuntimeError("IndexError: pop from empty list")
     return lst.pop(idx)
 
 
@@ -1266,7 +1263,7 @@ def _type_name(v) -> str:
         return "str"
     if isinstance(v, list):
         return "list"
-    if isinstance(v, EduPyFunction):
+    if isinstance(v, PyFunction):
         return "function"
     return type(v).__name__
 
@@ -1278,7 +1275,7 @@ def _type_name(v) -> str:
 
 class Interpreter:
     """
-    Executes an EduPy AST by walking the tree recursively.
+    Executes an Py AST by walking the tree recursively.
 
     Dispatch pattern: visit(node) → _visit_<ClassName>(node)
     (same pattern as CPython's compiler/AST visitors)
@@ -1302,7 +1299,7 @@ class Interpreter:
         try:
             node = p._expr()
             return self._eval(node, self.globals)
-        except (ParseError, EduPyRuntimeError):
+        except (ParseError, PyRuntimeError):
             raise
 
     # ── Statement execution ───────────────────────────────────────────────────
@@ -1315,13 +1312,13 @@ class Interpreter:
         name = type(node).__name__
         method = getattr(self, f"_exec_{name}", None)
         if method is None:
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"InternalError: no exec handler for {name}", node.line
             )
         method(node, env)
 
     def _exec_FuncDef(self, node: FuncDef, env: Environment):
-        fn = EduPyFunction(node, env)
+        fn = PyFunction(node, env)
         env.set(node.name, fn)
 
     def _exec_Assign(self, node: Assign, env: Environment):
@@ -1353,7 +1350,7 @@ class Interpreter:
     def _exec_For(self, node: For, env: Environment):
         iterable = self._eval(node.iter, env)
         if not isinstance(iterable, (list, str)):
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"TypeError: '{_type_name(iterable)}' object is not iterable", node.line
             )
         for item in iterable:
@@ -1366,7 +1363,7 @@ class Interpreter:
         name = type(node).__name__
         method = getattr(self, f"_eval_{name}", None)
         if method is None:
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"InternalError: no eval handler for {name}", node.line
             )
         return method(node, env)
@@ -1396,17 +1393,17 @@ class Interpreter:
         obj = self._eval(node.value, env)
         idx = self._eval(node.index, env)
         if not isinstance(obj, (list, str)):
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"TypeError: '{_type_name(obj)}' object is not subscriptable", node.line
             )
         if not isinstance(idx, (int, float)):
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"TypeError: indices must be integers, not '{_type_name(idx)}'",
                 node.line,
             )
         idx = int(idx)
         if idx < -len(obj) or idx >= len(obj):
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"IndexError: index {idx} out of range (length {len(obj)})", node.line
             )
         return obj[idx]
@@ -1449,19 +1446,19 @@ class Interpreter:
                 return left**right
             if op == "%":
                 if right == 0:
-                    raise EduPyRuntimeError("ZeroDivisionError: modulo by zero", line)
+                    raise PyRuntimeError("ZeroDivisionError: modulo by zero", line)
                 return left % right
             if op == "/":
                 if right == 0:
-                    raise EduPyRuntimeError("ZeroDivisionError: division by zero", line)
+                    raise PyRuntimeError("ZeroDivisionError: division by zero", line)
                 return left / right
             if op == "//":
                 if right == 0:
-                    raise EduPyRuntimeError(
+                    raise PyRuntimeError(
                         "ZeroDivisionError: integer division by zero", line
                     )
                 return int(left // right)
-        raise EduPyRuntimeError(
+        raise PyRuntimeError(
             f"TypeError: unsupported operand type(s) for '{op}': "
             f"'{_type_name(left)}' and '{_type_name(right)}'",
             line,
@@ -1474,14 +1471,14 @@ class Interpreter:
         if node.op == "-":
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 return -v
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"TypeError: bad operand type for unary '-': '{_type_name(v)}'",
                 node.line,
             )
         if node.op == "+":
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 return +v
-            raise EduPyRuntimeError(
+            raise PyRuntimeError(
                 f"TypeError: bad operand type for unary '+': '{_type_name(v)}'",
                 node.line,
             )
@@ -1498,7 +1495,7 @@ class Interpreter:
         # Ordered comparisons — must be same/compatible types
         for v in (left, right):
             if not isinstance(v, (int, float, str)):
-                raise EduPyRuntimeError(
+                raise PyRuntimeError(
                     f"TypeError: '{op}' not supported between '{_type_name(left)}' and '{_type_name(right)}'",
                     node.line,
                 )
@@ -1527,21 +1524,48 @@ class Interpreter:
                 result = self._eval(v, env)
             return result
 
+    def _eval_MethodCall(self, node: MethodCall, env: Environment) -> Any:
+        obj = self._eval(node.obj, env)
+        args = [self._eval(a, env) for a in node.args]
+        method = node.method
+
+        if isinstance(obj, str):
+            if method == "lower":
+                if args:
+                    raise PyRuntimeError(
+                        "TypeError: lower() takes no arguments", node.line
+                    )
+                return obj.lower()
+            if method == "upper":
+                if args:
+                    raise PyRuntimeError(
+                        "TypeError: upper() takes no arguments", node.line
+                    )
+                return obj.upper()
+            raise PyRuntimeError(
+                f"AttributeError: 'str' object has no attribute '{method}'", node.line
+            )
+
+        raise PyRuntimeError(
+            f"AttributeError: '{_type_name(obj)}' object has no attribute '{method}'",
+            node.line,
+        )
+
     def _eval_Call(self, node: Call, env: Environment) -> Any:
         callee = self._eval(node.func, env)
         args = [self._eval(a, env) for a in node.args]
 
         # Built-in (Python callable)
-        if callable(callee) and not isinstance(callee, EduPyFunction):
+        if callable(callee) and not isinstance(callee, PyFunction):
             result = callee(args)
             return result
 
-        # User-defined EduPy function
-        if isinstance(callee, EduPyFunction):
+        # User-defined Py function
+        if isinstance(callee, PyFunction):
             fn = callee.node
             arity = len(fn.params)
             if len(args) != arity:
-                raise EduPyRuntimeError(
+                raise PyRuntimeError(
                     f"TypeError: {fn.name}() takes {arity} argument(s) but {len(args)} given",
                     node.line,
                 )
@@ -1553,26 +1577,26 @@ class Interpreter:
                 self._exec(stmt, call_env)
             return result
 
-        raise EduPyRuntimeError(
+        raise PyRuntimeError(
             f"TypeError: '{_type_name(callee)}' object is not callable", node.line
         )
 
     def _exec_FuncDef(self, node: FuncDef, env: Environment):
-        env.set(node.name, EduPyFunction(node, env))
+        env.set(node.name, PyFunction(node, env))
 
     # Patch _eval_Call to properly catch return signals
     def _eval_Call(self, node: Call, env: Environment) -> Any:
         callee = self._eval(node.func, env)
         args = [self._eval(a, env) for a in node.args]
 
-        if callable(callee) and not isinstance(callee, EduPyFunction):
+        if callable(callee) and not isinstance(callee, PyFunction):
             return callee(args)
 
-        if isinstance(callee, EduPyFunction):
+        if isinstance(callee, PyFunction):
             fn = callee.node
             arity = len(fn.params)
             if len(args) != arity:
-                raise EduPyRuntimeError(
+                raise PyRuntimeError(
                     f"TypeError: {fn.name}() takes {arity} argument(s) but {len(args)} given",
                     node.line,
                 )
@@ -1586,7 +1610,7 @@ class Interpreter:
                 result = ret.value
             return result
 
-        raise EduPyRuntimeError(
+        raise PyRuntimeError(
             f"TypeError: '{_type_name(callee)}' object is not callable", node.line
         )
 
@@ -1672,6 +1696,11 @@ def _print_ast(node, indent=0):
         _print_ast(node.func, indent + 1)
         for a in node.args:
             _print_ast(a, indent + 1)
+    elif isinstance(node, MethodCall):
+        print(f"{pad}MethodCall method={node.method!r}")
+        _print_ast(node.obj, indent + 1)
+        for a in node.args:
+            _print_ast(a, indent + 1)
     elif isinstance(node, ListLiteral):
         print(f"{pad}ListLiteral [{len(node.elts)} elements]")
         for e in node.elts:
@@ -1722,19 +1751,20 @@ def run_source_with_ast(source: str, filename: str = "<string>"):
 
 BANNER = """\
 \033[96m╔══════════════════════════════════════════════════════╗
-║           EduPy  —  Educational Interpreter          ║
-║  Type EduPy code below.  'exit' or Ctrl-D to quit.  ║
+║           Py  —  cational Interpreter          ║
+║  Type Py code below.  'exit' or Ctrl-D to quit.  ║
 ║  'help' for a quick language reference.              ║
 ╚══════════════════════════════════════════════════════╝\033[0m"""
 
 HELP_TEXT = """
-EduPy Quick Reference
+Py Quick Reference
 ─────────────────────
 Variables:     x = 10          y = 3.14       s = "hello"
 Arithmetic:    + - * / // % **
 Comparison:    == != < <= > >=
 Logic:         and  or  not
 Strings:       "hi" + " world"   len("hello")   str(42)
+               "Hi".lower()      "hi".upper()
 Lists:         lst = [1, 2, 3]   lst[0]   len(lst)   append(lst, 4)
 Control flow:
   if x > 0:
@@ -1757,6 +1787,7 @@ Functions:
   print(greet("world"))
 
 Builtins: print len range int float str bool abs max min type input append pop
+String methods: .lower()  .upper()
 """
 
 
@@ -1798,7 +1829,7 @@ def repl():
         # Attempt execution
         try:
             run_source(source + "\n", interp)
-        except (LexerError, ParseError, EduPyRuntimeError) as e:
+        except (LexerError, ParseError, PyRuntimeError) as e:
             print(e)
         except Exception as e:
             print(f"\033[91mInternalError\033[0m: {e}")
@@ -1833,7 +1864,7 @@ def main():
     files = [a for a in args if not a.startswith("--")]
 
     if not files:
-        print("Usage: python edupy.py [script.ep] [--ast]")
+        print("Usage: python py.py [script.ep] [--ast]")
         sys.exit(1)
 
     filepath = files[0]
@@ -1850,7 +1881,7 @@ def main():
             run_source_with_ast(source, filename=filepath)
         else:
             run_source(source, filename=filepath)
-    except (LexerError, ParseError, EduPyRuntimeError) as e:
+    except (LexerError, ParseError, PyRuntimeError) as e:
         print(e)
         sys.exit(1)
     except Exception as e:
