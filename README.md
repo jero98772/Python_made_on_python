@@ -1,5 +1,4 @@
-# Python_made_on_python
+# map rust
 
-
-	python3 main.py example1.py
-	python3 main.py example2.py
+	cargo build --release
+	./target/release/py script.py   
