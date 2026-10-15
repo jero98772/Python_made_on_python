@@ -1,8 +1,14 @@
 # Python_made_on_python
 
 
-	python3 main.py example1.py
-	python3 main.py example2.py
+python py_llvm.py --compile script.ep -o myapp
+./myapp
+
+	python3 main.py --compile example1.py
+	python3 main.py --compile example2.py
+
+	python3 main.py --compile example1.py
+	python3 main.py --compile example2.py
 
 There are additional implementations in other programming languages available in the different branches.
 
